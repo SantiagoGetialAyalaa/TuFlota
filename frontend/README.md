@@ -1,16 +1,41 @@
-# transport_frontend
+# Flota Frontend
 
-A new Flutter project.
+Frontend Flutter para la aplicacion Flota.
 
-## Getting Started
+## Ejecutar
 
-This project is a starting point for a Flutter application.
+Desde `transport-app/frontend`:
 
-A few resources to get you started if this is your first Flutter project:
+```bash
+flutter pub get
+flutter run -d web-server --web-hostname 127.0.0.1 --web-port 8080
+```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+Si `8080` esta ocupado:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter run -d web-server --web-hostname 127.0.0.1 --web-port 8081
+```
+
+## Backend esperado
+
+La app consume por defecto:
+
+```text
+http://127.0.0.1:8000/api
+```
+
+En Android emulator usa:
+
+```text
+http://10.0.2.2:8000/api
+```
+
+La URL tambien se puede cambiar desde el campo `API` dentro de la app.
+
+## Verificacion
+
+```bash
+flutter analyze --no-pub
+dart format lib/main.dart
+```

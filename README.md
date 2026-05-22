@@ -1,58 +1,346 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Flota - Backend Laravel + Frontend Flutter
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Aplicacion de transporte para buscar rutas, reservar asientos, pagar reservas y administrar operaciones desde una cuenta de empresa.
 
-## About Laravel
+El proyecto esta dividido en:
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- `transport-app/`: backend Laravel API.
+- `transport-app/frontend/`: frontend Flutter multiplataforma.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Funcionalidades
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+### Usuario pasajero
 
-## Learning Laravel
+- Buscar viajes por origen y destino.
+- Ver mensaje cuando no hay rutas creadas.
+- Seleccionar una ruta disponible.
+- Seleccionar asiento.
+- Iniciar sesion o crear cuenta solo cuando va a reservar.
+- Crear reserva.
+- Pagar con pasarela simulada.
+- Ver informacion del viaje confirmado y reservas propias.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+### Empresa
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+- Crear cuenta como empresa.
+- Crear rutas con origen, destino, precio, horarios, distancia y duracion.
+- Crear viajes sobre horarios existentes.
+- Ver rutas y horarios registrados.
+- Ver pasajeros/reservas.
+- Actualizacion automatica del modulo empresa desde el frontend.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+### Backend
 
-## Agentic Development
+- API REST en Laravel.
+- Arquitectura por capas: `Application`, `Domain`, `Infrastructure`, `Http`.
+- Autenticacion JWT.
+- Migraciones y seeders.
+- Reservas, asientos, viajes, rutas, conductores, vehiculos, pagos y cola FIFO.
+- Pago simulado para marcar reservas como pagadas.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+## Requisitos
+
+- PHP 8.3 o superior.
+- Composer.
+- Node.js y npm.
+- Flutter SDK.
+- SQLite o MySQL.
+
+## Clonar el proyecto
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+git clone <URL_DEL_REPOSITORIO>
+cd transport-app
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+## Configurar backend Laravel
 
-## Contributing
+Instala dependencias:
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```bash
+composer install
+npm install
+```
 
-## Code of Conduct
+Crea el archivo de entorno:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+cp .env.example .env
+php artisan key:generate
+```
 
-## Security Vulnerabilities
+### Opcion A: SQLite
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+Es la forma mas simple para desarrollo local.
 
-## License
+En `.env` deja:
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+```env
+DB_CONNECTION=sqlite
+```
+
+Crea la base:
+
+```bash
+touch database/database.sqlite
+php artisan migrate --seed
+```
+
+### Opcion B: MySQL
+
+Crea una base de datos, por ejemplo `flota`, y configura `.env`:
+
+```env
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=flota
+DB_USERNAME=root
+DB_PASSWORD=
+```
+
+Luego ejecuta:
+
+```bash
+php artisan migrate --seed
+```
+
+## Levantar backend
+
+```bash
+php artisan serve --host=127.0.0.1 --port=8000
+```
+
+La API queda en:
+
+```text
+http://127.0.0.1:8000/api
+```
+
+## Configurar frontend Flutter
+
+En otra terminal:
+
+```bash
+cd frontend
+flutter pub get
+```
+
+Para web:
+
+```bash
+flutter run -d web-server --web-hostname 127.0.0.1 --web-port 8080
+```
+
+Abre:
+
+```text
+http://127.0.0.1:8080
+```
+
+Si el puerto esta ocupado, usa otro:
+
+```bash
+flutter run -d web-server --web-hostname 127.0.0.1 --web-port 8081
+```
+
+## URL de API en Flutter
+
+El frontend usa por defecto:
+
+- Web, macOS, iOS, Linux, Windows: `http://127.0.0.1:8000/api`
+- Android emulator: `http://10.0.2.2:8000/api`
+
+Tambien puedes cambiar la URL desde el campo `API` dentro de la app.
+
+## Cuentas demo
+
+Despues de `php artisan migrate --seed` quedan disponibles:
+
+### Usuario
+
+```text
+Email: test@example.com
+Password: password
+```
+
+### Empresa
+
+```text
+Email: empresa@example.com
+Password: password
+```
+
+### Conductor demo
+
+```text
+Email: driver@example.com
+Password: password
+Licencia: LIC-FLOTA-001
+```
+
+## Flujo recomendado para probar
+
+1. Levanta Laravel en `http://127.0.0.1:8000`.
+2. Levanta Flutter web.
+3. En la pantalla inicial busca:
+
+```text
+Origen: Pasto
+Destino: Tangua
+```
+
+4. Selecciona la ruta disponible.
+5. Selecciona un asiento.
+6. Inicia sesion como usuario o crea una cuenta.
+7. Paga la reserva.
+8. Inicia sesion como empresa para ver pasajeros y administrar rutas/viajes.
+
+## Endpoints principales
+
+### Autenticacion
+
+```http
+POST /api/auth/register
+POST /api/auth/login
+```
+
+`register` acepta:
+
+```json
+{
+  "name": "Nombre",
+  "email": "correo@example.com",
+  "phone": "3001234567",
+  "role": "user",
+  "password": "password"
+}
+```
+
+Roles permitidos:
+
+- `user`
+- `company`
+
+### Viajes
+
+```http
+GET /api/trips
+POST /api/trips
+```
+
+Filtros para buscar:
+
+```text
+origin
+destination
+date
+status
+```
+
+### Asientos
+
+```http
+GET /api/seats/trips/{trip}
+POST /api/seats/assign
+```
+
+### Reservas
+
+```http
+POST /api/reservations
+POST /api/reservations/{reservation}/pay
+DELETE /api/reservations/{reservation}
+GET /api/users/{user}/reservations
+```
+
+### Empresa
+
+```http
+GET /api/company/routes
+POST /api/company/routes
+GET /api/company/passengers
+```
+
+### Conductores y cola FIFO
+
+```http
+POST /api/drivers/queue
+```
+
+## Estructura importante
+
+```text
+app/
+  Application/UseCases/       Casos de uso
+  Domain/                     Entidades, contratos y reglas de negocio
+  Http/Controllers/           Controladores API
+  Http/Requests/              Validaciones HTTP
+  Infrastructure/             Persistencia y servicios concretos
+
+database/
+  migrations/                 Estructura de base de datos
+  seeders/                    Datos demo
+
+frontend/
+  lib/main.dart               App Flutter
+  pubspec.yaml                Dependencias Flutter
+
+routes/
+  api.php                     Rutas de la API
+```
+
+## Comandos utiles
+
+Ejecutar tests Laravel:
+
+```bash
+php artisan test
+```
+
+Analizar Flutter:
+
+```bash
+cd frontend
+flutter analyze --no-pub
+```
+
+Formatear Flutter:
+
+```bash
+dart format lib/main.dart
+```
+
+Formatear PHP con Pint:
+
+```bash
+./vendor/bin/pint
+```
+
+Recrear base desde cero en desarrollo:
+
+```bash
+php artisan migrate:fresh --seed
+```
+
+Limpiar caches Laravel:
+
+```bash
+php artisan optimize:clear
+```
+
+## Notas de desarrollo
+
+- El pago actual es simulado y marca la reserva como `paid`.
+- La app no usa Google Maps ni claves externas por ahora; muestra la informacion de ruta y coordenadas disponibles desde la API.
+- Para crear viajes desde empresa se necesitan IDs validos de `schedule`, `vehicle` y `driver`. El seeder deja datos demo con IDs iniciales normalmente en `1`.
+- El modulo empresa se refresca automaticamente desde Flutter y tambien puede actualizarse manualmente.
+
+## Verificacion actual
+
+El proyecto fue verificado con:
+
+```bash
+php artisan test
+flutter analyze --no-pub
+```
