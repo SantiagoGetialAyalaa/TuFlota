@@ -1,10 +1,21 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const FlotaApp());
+}
+
+String defaultApiBaseUrl() {
+  if (kIsWeb) return 'http://127.0.0.1:8000/api';
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    return 'http://10.0.2.2:8000/api';
+  }
+  return 'http://127.0.0.1:8000/api';
 }
 
 class FlotaApp extends StatelessWidget {
@@ -16,18 +27,17 @@ class FlotaApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Flota',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xff2563eb),
-          brightness: Brightness.light,
-        ),
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff0f766e)),
         scaffoldBackgroundColor: const Color(0xfff6f8fb),
         inputDecorationTheme: const InputDecorationTheme(
           border: OutlineInputBorder(),
           isDense: true,
         ),
         cardTheme: const CardThemeData(
-          margin: EdgeInsets.zero,
           elevation: 0,
+          margin: EdgeInsets.zero,
+          color: Colors.white,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(8)),
             side: BorderSide(color: Color(0xffdbe3ef)),
@@ -81,11 +91,7 @@ class ApiClient {
   Future<dynamic> _send(Future<http.Response> Function() request) async {
     final response = await request();
     final body = response.body.isEmpty ? null : jsonDecode(response.body);
-
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      return body;
-    }
-
+    if (response.statusCode >= 200 && response.statusCode < 300) return body;
     final message = body is Map && body['message'] != null
         ? body['message'].toString()
         : 'Error ${response.statusCode}';
@@ -111,55 +117,74 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   late final ApiClient api;
-  final baseUrl = TextEditingController(text: 'http://127.0.0.1:8001/api');
+  Timer? refreshTimer;
+
+  final baseUrl = TextEditingController(text: defaultApiBaseUrl());
+  final origin = TextEditingController();
+  final destination = TextEditingController();
   final email = TextEditingController(text: 'test@example.com');
   final password = TextEditingController(text: 'password');
   final name = TextEditingController(text: 'Test User');
   final phone = TextEditingController(text: '3001234567');
-  final origin = TextEditingController();
-  final destination = TextEditingController();
-  final date = TextEditingController();
-  final tripId = TextEditingController();
-  final userId = TextEditingController(text: '1');
-  final reservationId = TextEditingController();
+  final routeOrigin = TextEditingController(text: 'Pasto');
+  final routeDestination = TextEditingController(text: 'Tangua');
+  final routePrice = TextEditingController(text: '8000');
+  final routeDeparture = TextEditingController(text: '08:00');
+  final routeArrival = TextEditingController(text: '09:00');
+  final routeDistance = TextEditingController(text: '32.5');
+  final routeMinutes = TextEditingController(text: '60');
   final scheduleId = TextEditingController(text: '1');
   final vehicleId = TextEditingController(text: '1');
   final driverId = TextEditingController(text: '1');
-  final queueDriverId = TextEditingController(text: '1');
 
   bool busy = false;
-  String? error;
+  bool authIsCompany = false;
   String? notice;
-  Map<String, dynamic>? currentUser;
+  String? error;
+  Map<String, dynamic>? user;
   List<dynamic> trips = [];
   List<dynamic> seats = [];
   List<dynamic> reservations = [];
+  List<dynamic> companyRoutes = [];
+  List<dynamic> passengers = [];
+  dynamic selectedTrip;
+  dynamic paidReservation;
   final selectedSeats = <int>{};
 
   @override
   void initState() {
     super.initState();
     api = ApiClient(baseUrl.text);
-    loadTrips();
+    searchTrips();
+    refreshTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      refreshCompanyData(quiet: true);
+    });
   }
 
   @override
   void dispose() {
-    baseUrl.dispose();
-    email.dispose();
-    password.dispose();
-    name.dispose();
-    phone.dispose();
-    origin.dispose();
-    destination.dispose();
-    date.dispose();
-    tripId.dispose();
-    userId.dispose();
-    reservationId.dispose();
-    scheduleId.dispose();
-    vehicleId.dispose();
-    driverId.dispose();
-    queueDriverId.dispose();
+    refreshTimer?.cancel();
+    for (final controller in [
+      baseUrl,
+      origin,
+      destination,
+      email,
+      password,
+      name,
+      phone,
+      routeOrigin,
+      routeDestination,
+      routePrice,
+      routeDeparture,
+      routeArrival,
+      routeDistance,
+      routeMinutes,
+      scheduleId,
+      vehicleId,
+      driverId,
+    ]) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -181,49 +206,141 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  int intFrom(TextEditingController controller, String label) {
+    final value = int.tryParse(controller.text.trim());
+    if (value == null) throw ApiException('$label debe ser numerico.');
+    return value;
+  }
+
+  double doubleFrom(TextEditingController controller, String label) {
+    final value = double.tryParse(controller.text.trim());
+    if (value == null) throw ApiException('$label debe ser numerico.');
+    return value;
+  }
+
   Future<void> login() {
     return runTask(() async {
       final data = await api.post('/auth/login', {
-        'email': email.text,
+        'email': email.text.trim(),
         'password': password.text,
       });
       api.token = data['token']?.toString();
-      currentUser = Map<String, dynamic>.from(data['user'] as Map);
-      userId.text = currentUser!['id'].toString();
-      notice = 'Sesion iniciada: ${currentUser!['name']}';
-      await loadTrips(quiet: true);
-      await loadReservations(quiet: true);
+      user = Map<String, dynamic>.from(data['user'] as Map);
+      notice = 'Sesion iniciada';
+      await afterAuthRefresh();
       setState(() {});
     });
   }
 
   Future<void> register() {
     return runTask(() async {
-      final data = await api.post('/auth/register', {
-        'name': name.text,
-        'email': email.text,
-        'phone': phone.text,
+      await api.post('/auth/register', {
+        'name': name.text.trim(),
+        'email': email.text.trim(),
+        'phone': phone.text.trim(),
+        'role': authIsCompany ? 'company' : 'user',
         'password': password.text,
       });
-      currentUser = Map<String, dynamic>.from(data as Map);
-      userId.text = currentUser!['id'].toString();
-      notice = 'Usuario creado: ${currentUser!['name']}';
-      setState(() {});
+      notice = 'Cuenta creada';
+      await login();
     });
   }
 
-  Future<void> loadTrips({bool quiet = false}) {
+  Future<void> afterAuthRefresh() async {
+    if (user?['role'] == 'company') {
+      await refreshCompanyData(quiet: true);
+    } else if (user != null) {
+      await loadReservations(quiet: true);
+    }
+  }
+
+  Future<void> searchTrips() {
     return runTask(() async {
       final data = await api.get('/trips', {
         'origin': origin.text,
         'destination': destination.text,
-        'date': date.text,
       });
       trips = data as List<dynamic>;
-      if (trips.isNotEmpty && tripId.text.trim().isEmpty) {
-        tripId.text = trips.first['id'].toString();
+      if (selectedTrip != null) {
+        selectedTrip = _findTripById(selectedTrip['id']);
       }
-      if (!quiet) notice = '${trips.length} viaje(s) cargado(s)';
+      notice = trips.isEmpty
+          ? 'No hay rutas disponibles'
+          : '${trips.length} ruta(s) encontrada(s)';
+      setState(() {});
+    });
+  }
+
+  dynamic _findTripById(dynamic id) {
+    for (final trip in trips) {
+      if (trip is Map && trip['id'] == id) return trip;
+    }
+    return null;
+  }
+
+  Future<void> selectTrip(dynamic trip) {
+    return runTask(() async {
+      selectedTrip = trip;
+      selectedSeats.clear();
+      paidReservation = null;
+      seats = await api.get('/seats/trips/${trip['id']}') as List<dynamic>;
+      notice = 'Selecciona tu asiento';
+      setState(() {});
+    });
+  }
+
+  Future<void> reserveAndPay() {
+    return runTask(() async {
+      if (user == null) {
+        throw ApiException('Inicia sesion o crea una cuenta para reservar.');
+      }
+      if (selectedTrip == null || selectedSeats.isEmpty) {
+        throw ApiException('Selecciona un viaje y al menos un asiento.');
+      }
+
+      final reservation = await api.post('/reservations', {
+        'user_id': user!['id'],
+        'trip_id': selectedTrip['id'],
+        'seat_ids': selectedSeats.toList(),
+        'reserved_minutes': 15,
+      });
+      paidReservation = await api.post(
+        '/reservations/${reservation['id']}/pay',
+        {},
+      );
+      notice = 'Pago aprobado';
+      await selectTrip(selectedTrip);
+      await loadReservations(quiet: true);
+      await refreshCompanyData(quiet: true);
+      setState(() {});
+    });
+  }
+
+  Future<void> loadReservations({bool quiet = false}) {
+    return runTask(() async {
+      if (user == null) return;
+      reservations =
+          await api.get('/users/${user!['id']}/reservations') as List<dynamic>;
+      if (!quiet) notice = '${reservations.length} reserva(s)';
+      setState(() {});
+    });
+  }
+
+  Future<void> createRoute() {
+    return runTask(() async {
+      final data = await api.post('/company/routes', {
+        'origin': routeOrigin.text.trim(),
+        'destination': routeDestination.text.trim(),
+        'base_price': doubleFrom(routePrice, 'Precio'),
+        'departure_time': routeDeparture.text.trim(),
+        'estimated_arrival_time': routeArrival.text.trim(),
+        'distance_km': doubleFrom(routeDistance, 'Distancia'),
+        'estimated_duration_minutes': intFrom(routeMinutes, 'Duracion'),
+      });
+      final schedule = data['schedule'] as Map;
+      scheduleId.text = schedule['id'].toString();
+      notice = 'Ruta creada. Horario #${schedule['id']}';
+      await refreshCompanyData(quiet: true);
       setState(() {});
     });
   }
@@ -231,171 +348,107 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> createTrip() {
     return runTask(() async {
       final data = await api.post('/trips', {
-        'schedule_id': int.parse(scheduleId.text),
-        'vehicle_id': int.parse(vehicleId.text),
-        'driver_id': int.parse(driverId.text),
+        'schedule_id': intFrom(scheduleId, 'Horario'),
+        'vehicle_id': intFrom(vehicleId, 'Vehiculo'),
+        'driver_id': intFrom(driverId, 'Conductor'),
         'departure_datetime': DateTime.now()
             .add(const Duration(days: 1))
             .toIso8601String(),
         'status': 'scheduled',
       });
-      notice = 'Viaje creado #${data['id']}';
-      await loadTrips(quiet: true);
+      notice = 'Viaje #${data['id']} creado';
+      await searchTrips();
+      await refreshCompanyData(quiet: true);
     });
   }
 
-  Future<void> loadSeats() {
+  Future<void> refreshCompanyData({bool quiet = false}) {
     return runTask(() async {
-      final id = int.parse(tripId.text);
-      final data = await api.get('/seats/trips/$id');
-      seats = data as List<dynamic>;
-      selectedSeats.clear();
-      notice = '${seats.length} asiento(s) cargado(s)';
+      companyRoutes = await api.get('/company/routes') as List<dynamic>;
+      passengers = await api.get('/company/passengers') as List<dynamic>;
+      if (!quiet) notice = 'Modulo empresa actualizado';
       setState(() {});
     });
   }
 
-  Future<void> createReservation() {
-    return runTask(() async {
-      final data = await api.post('/reservations', {
-        'user_id': int.parse(userId.text),
-        'trip_id': int.parse(tripId.text),
-        'seat_ids': selectedSeats.toList(),
-        'reserved_minutes': 15,
-      });
-      reservationId.text = data['id'].toString();
-      notice = 'Reserva creada: ${data['code']}';
-      await loadSeats();
-      await loadReservations(quiet: true);
-    });
-  }
-
-  Future<void> assignSeats() {
-    return runTask(() async {
-      final data = await api.post('/seats/assign', {
-        'reservation_id': int.parse(reservationId.text),
-        'seat_ids': selectedSeats.toList(),
-      });
-      notice = 'Asientos asignados a reserva ${data['code']}';
-      await loadSeats();
-      await loadReservations(quiet: true);
-    });
-  }
-
-  Future<void> loadReservations({bool quiet = false}) {
-    return runTask(() async {
-      final id = int.parse(userId.text);
-      final data = await api.get('/users/$id/reservations');
-      reservations = data as List<dynamic>;
-      if (!quiet) notice = '${reservations.length} reserva(s) cargada(s)';
-      setState(() {});
-    });
-  }
-
-  Future<void> cancelReservation(int id) {
-    return runTask(() async {
-      await api.delete('/reservations/$id');
-      notice = 'Reserva #$id cancelada';
-      await loadReservations(quiet: true);
-      if (tripId.text.trim().isNotEmpty) await loadSeats();
-    });
-  }
-
-  Future<void> joinQueue() {
-    return runTask(() async {
-      final data = await api.post('/drivers/queue', {
-        'driver_id': int.parse(queueDriverId.text),
-      });
-      notice = 'Conductor en cola: #${data['driver_id'] ?? queueDriverId.text}';
-    });
-  }
+  bool get isCompany => user?['role'] == 'company';
+  bool get isUser => user?['role'] == 'user' || user == null;
 
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      length: isCompany ? 2 : 1,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Flota'),
-          bottom: const TabBar(
-            isScrollable: true,
-            tabs: [
-              Tab(icon: Icon(Icons.person), text: 'Auth'),
-              Tab(icon: Icon(Icons.route), text: 'Viajes'),
-              Tab(icon: Icon(Icons.event_seat), text: 'Reservar'),
-              Tab(icon: Icon(Icons.receipt_long), text: 'Mis reservas'),
-              Tab(icon: Icon(Icons.local_shipping), text: 'Operacion'),
-            ],
-          ),
+          actions: [
+            if (user == null)
+              TextButton.icon(
+                onPressed: () => showAuthSheet(context),
+                icon: const Icon(Icons.login),
+                label: const Text('Ingresar'),
+              )
+            else
+              TextButton.icon(
+                onPressed: () {
+                  setState(() {
+                    user = null;
+                    api.token = null;
+                    reservations = [];
+                  });
+                },
+                icon: const Icon(Icons.logout),
+                label: Text(user!['name'].toString()),
+              ),
+          ],
+          bottom: isCompany
+              ? const TabBar(
+                  tabs: [
+                    Tab(icon: Icon(Icons.storefront), text: 'Empresa'),
+                    Tab(icon: Icon(Icons.search), text: 'Cliente'),
+                  ],
+                )
+              : null,
         ),
         body: SafeArea(
           child: Column(
             children: [
-              _ConnectionBar(
-                controller: baseUrl,
+              _TopBar(
+                baseUrl: baseUrl,
                 busy: busy,
-                user: currentUser,
-                error: error,
                 notice: notice,
+                error: error,
+                user: user,
               ),
               Expanded(
-                child: TabBarView(
-                  children: [
-                    _AuthTab(
-                      email: email,
-                      password: password,
-                      name: name,
-                      phone: phone,
-                      onLogin: login,
-                      onRegister: register,
-                    ),
-                    _TripsTab(
-                      origin: origin,
-                      destination: destination,
-                      date: date,
-                      tripId: tripId,
-                      trips: trips,
-                      onSearch: loadTrips,
-                      onUseTrip: (id) {
-                        tripId.text = id.toString();
-                        loadSeats();
-                      },
-                    ),
-                    _ReservationTab(
-                      tripId: tripId,
-                      userId: userId,
-                      reservationId: reservationId,
-                      seats: seats,
-                      selectedSeats: selectedSeats,
-                      onLoadSeats: loadSeats,
-                      onReserve: createReservation,
-                      onAssign: assignSeats,
-                      onSeatChanged: (id, selected) {
-                        setState(() {
-                          if (selected) {
-                            selectedSeats.add(id);
-                          } else {
-                            selectedSeats.remove(id);
-                          }
-                        });
-                      },
-                    ),
-                    _ReservationsTab(
-                      userId: userId,
-                      reservations: reservations,
-                      onLoad: loadReservations,
-                      onCancel: cancelReservation,
-                    ),
-                    _OperationsTab(
-                      scheduleId: scheduleId,
-                      vehicleId: vehicleId,
-                      driverId: driverId,
-                      queueDriverId: queueDriverId,
-                      onCreateTrip: createTrip,
-                      onJoinQueue: joinQueue,
-                    ),
-                  ],
-                ),
+                child: isCompany
+                    ? TabBarView(
+                        children: [
+                          _CompanyView(
+                            routes: companyRoutes,
+                            trips: trips,
+                            passengers: passengers,
+                            scheduleId: scheduleId,
+                            vehicleId: vehicleId,
+                            driverId: driverId,
+                            routeOrigin: routeOrigin,
+                            routeDestination: routeDestination,
+                            routePrice: routePrice,
+                            routeDeparture: routeDeparture,
+                            routeArrival: routeArrival,
+                            routeDistance: routeDistance,
+                            routeMinutes: routeMinutes,
+                            onCreateRoute: createRoute,
+                            onCreateTrip: createTrip,
+                            onRefresh: refreshCompanyData,
+                            onUseSchedule: (id) {
+                              setState(() => scheduleId.text = id.toString());
+                            },
+                          ),
+                          customerView(),
+                        ],
+                      )
+                    : customerView(),
               ),
             ],
           ),
@@ -403,73 +456,172 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+  Widget customerView() {
+    return _CustomerView(
+      origin: origin,
+      destination: destination,
+      trips: trips,
+      selectedTrip: selectedTrip,
+      seats: seats,
+      selectedSeats: selectedSeats,
+      user: user,
+      reservations: reservations,
+      paidReservation: paidReservation,
+      onSearch: searchTrips,
+      onSelectTrip: selectTrip,
+      onSeatChanged: (id, selected) {
+        setState(() {
+          selected ? selectedSeats.add(id) : selectedSeats.remove(id);
+        });
+      },
+      onAuth: () => showAuthSheet(context),
+      onPay: reserveAndPay,
+      onLoadReservations: loadReservations,
+    );
+  }
+
+  void showAuthSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, sheetSetState) {
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(
+                        value: false,
+                        label: Text('Usuario'),
+                        icon: Icon(Icons.person),
+                      ),
+                      ButtonSegment(
+                        value: true,
+                        label: Text('Empresa'),
+                        icon: Icon(Icons.business),
+                      ),
+                    ],
+                    selected: {authIsCompany},
+                    onSelectionChanged: (value) {
+                      sheetSetState(() => authIsCompany = value.first);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  _Field(
+                    controller: name,
+                    label: authIsCompany ? 'Nombre empresa' : 'Nombre',
+                    icon: Icons.badge,
+                  ),
+                  _Field(controller: email, label: 'Email', icon: Icons.email),
+                  _Field(
+                    controller: phone,
+                    label: 'Telefono',
+                    icon: Icons.phone,
+                  ),
+                  _Field(
+                    controller: password,
+                    label: 'Password',
+                    icon: Icons.key,
+                    obscureText: true,
+                  ),
+                  _Actions(
+                    children: [
+                      FilledButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          login();
+                        },
+                        icon: const Icon(Icons.login),
+                        label: const Text('Iniciar sesion'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          register();
+                        },
+                        icon: const Icon(Icons.person_add),
+                        label: const Text('Crear cuenta'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }
 
-class _ConnectionBar extends StatelessWidget {
-  const _ConnectionBar({
-    required this.controller,
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.baseUrl,
     required this.busy,
-    required this.user,
-    required this.error,
     required this.notice,
+    required this.error,
+    required this.user,
   });
 
-  final TextEditingController controller;
+  final TextEditingController baseUrl;
   final bool busy;
-  final Map<String, dynamic>? user;
-  final String? error;
   final String? notice;
+  final String? error;
+  final Map<String, dynamic>? user;
 
   @override
   Widget build(BuildContext context) {
-    final color = error == null ? const Color(0xff0f766e) : Colors.red.shade700;
-    final text = error ?? notice;
+    final message = error ?? notice;
+    final messageColor = error == null ? const Color(0xff0f766e) : Colors.red;
 
     return Material(
       color: Colors.white,
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Column(
+        child: Row(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: controller,
-                    decoration: const InputDecoration(
-                      labelText: 'Base URL API',
-                      prefixIcon: Icon(Icons.link),
-                    ),
-                  ),
+            Expanded(
+              flex: 2,
+              child: TextField(
+                controller: baseUrl,
+                decoration: const InputDecoration(
+                  labelText: 'API',
+                  prefixIcon: Icon(Icons.link),
                 ),
-                const SizedBox(width: 12),
-                if (busy)
-                  const SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-              ],
+              ),
             ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(user == null ? Icons.lock_open : Icons.verified_user),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    user == null
-                        ? 'Sin sesion activa'
-                        : 'Usuario #${user!['id']} - ${user!['name']}',
-                  ),
+            const SizedBox(width: 10),
+            _Pill(
+              icon: user?['role'] == 'company' ? Icons.business : Icons.person,
+              text: user == null ? 'Invitado' : '${user!['name']}',
+            ),
+            if (message != null) ...[
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  message,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: messageColor),
                 ),
-              ],
-            ),
-            if (text != null) ...[
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(text, style: TextStyle(color: color)),
+              ),
+            ],
+            if (busy) ...[
+              const SizedBox(width: 10),
+              const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ],
           ],
@@ -479,81 +631,50 @@ class _ConnectionBar extends StatelessWidget {
   }
 }
 
-class _AuthTab extends StatelessWidget {
-  const _AuthTab({
-    required this.email,
-    required this.password,
-    required this.name,
-    required this.phone,
-    required this.onLogin,
-    required this.onRegister,
-  });
-
-  final TextEditingController email;
-  final TextEditingController password;
-  final TextEditingController name;
-  final TextEditingController phone;
-  final VoidCallback onLogin;
-  final VoidCallback onRegister;
-
-  @override
-  Widget build(BuildContext context) {
-    return _Panel(
-      children: [
-        _Field(controller: name, label: 'Nombre', icon: Icons.badge),
-        _Field(controller: email, label: 'Email', icon: Icons.email),
-        _Field(controller: phone, label: 'Telefono', icon: Icons.phone),
-        _Field(
-          controller: password,
-          label: 'Password',
-          icon: Icons.key,
-          obscureText: true,
-        ),
-        _Actions(
-          children: [
-            FilledButton.icon(
-              onPressed: onLogin,
-              icon: const Icon(Icons.login),
-              label: const Text('Login'),
-            ),
-            OutlinedButton.icon(
-              onPressed: onRegister,
-              icon: const Icon(Icons.person_add),
-              label: const Text('Registrar'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _TripsTab extends StatelessWidget {
-  const _TripsTab({
+class _CustomerView extends StatelessWidget {
+  const _CustomerView({
     required this.origin,
     required this.destination,
-    required this.date,
-    required this.tripId,
     required this.trips,
+    required this.selectedTrip,
+    required this.seats,
+    required this.selectedSeats,
+    required this.user,
+    required this.reservations,
+    required this.paidReservation,
     required this.onSearch,
-    required this.onUseTrip,
+    required this.onSelectTrip,
+    required this.onSeatChanged,
+    required this.onAuth,
+    required this.onPay,
+    required this.onLoadReservations,
   });
 
   final TextEditingController origin;
   final TextEditingController destination;
-  final TextEditingController date;
-  final TextEditingController tripId;
   final List<dynamic> trips;
+  final dynamic selectedTrip;
+  final List<dynamic> seats;
+  final Set<int> selectedSeats;
+  final Map<String, dynamic>? user;
+  final List<dynamic> reservations;
+  final dynamic paidReservation;
   final VoidCallback onSearch;
-  final ValueChanged<int> onUseTrip;
+  final ValueChanged<dynamic> onSelectTrip;
+  final void Function(int id, bool selected) onSeatChanged;
+  final VoidCallback onAuth;
+  final VoidCallback onPay;
+  final VoidCallback onLoadReservations;
 
   @override
   Widget build(BuildContext context) {
-    return _Panel(
+    return ListView(
+      padding: const EdgeInsets.all(16),
       children: [
+        _Section(icon: Icons.search, title: 'Busca tu ruta'),
         LayoutBuilder(
           builder: (context, constraints) {
-            final compact = constraints.maxWidth < 680;
+            final compact = constraints.maxWidth < 720;
             final fields = [
               _Field(
                 controller: origin,
@@ -564,11 +685,6 @@ class _TripsTab extends StatelessWidget {
                 controller: destination,
                 label: 'Destino',
                 icon: Icons.flag,
-              ),
-              _Field(
-                controller: date,
-                label: 'Fecha YYYY-MM-DD',
-                icon: Icons.calendar_today,
               ),
             ];
             if (compact) return Column(children: fields);
@@ -591,77 +707,317 @@ class _TripsTab extends StatelessWidget {
             FilledButton.icon(
               onPressed: onSearch,
               icon: const Icon(Icons.search),
-              label: const Text('Buscar viajes'),
+              label: const Text('Buscar'),
             ),
           ],
         ),
-        _Field(
-          controller: tripId,
-          label: 'Viaje seleccionado',
-          icon: Icons.tag,
-        ),
-        ...trips.map((trip) => _TripCard(trip: trip, onUseTrip: onUseTrip)),
+        const SizedBox(height: 12),
+        if (trips.isEmpty)
+          const _EmptyState(
+            text: 'No hay rutas creadas para ese origen y destino',
+          )
+        else
+          ...trips.map(
+            (trip) => _TripCard(
+              trip: trip,
+              selected: selectedTrip?['id'] == trip['id'],
+              onSelect: () => onSelectTrip(trip),
+            ),
+          ),
+        if (selectedTrip != null) ...[
+          const SizedBox(height: 16),
+          _Section(icon: Icons.event_seat, title: 'Selecciona asiento'),
+          _SeatGrid(
+            seats: seats,
+            selectedSeats: selectedSeats,
+            onSeatChanged: onSeatChanged,
+          ),
+          const SizedBox(height: 12),
+          if (user == null)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.lock),
+                title: const Text('Inicia sesion para reservar'),
+                subtitle: const Text(
+                  'Puedes crear cuenta como usuario o empresa.',
+                ),
+                trailing: FilledButton(
+                  onPressed: onAuth,
+                  child: const Text('Ingresar'),
+                ),
+              ),
+            )
+          else
+            _PaymentCard(
+              trip: selectedTrip,
+              selectedSeatCount: selectedSeats.length,
+              onPay: selectedSeats.isEmpty ? null : onPay,
+            ),
+        ],
+        if (paidReservation != null) ...[
+          const SizedBox(height: 16),
+          _Section(icon: Icons.check_circle, title: 'Viaje confirmado'),
+          _ReservationSummary(reservation: paidReservation),
+        ],
+        if (user != null && user?['role'] != 'company') ...[
+          const SizedBox(height: 16),
+          _Section(icon: Icons.receipt_long, title: 'Mis viajes'),
+          _Actions(
+            children: [
+              OutlinedButton.icon(
+                onPressed: onLoadReservations,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Actualizar'),
+              ),
+            ],
+          ),
+          if (reservations.isEmpty)
+            const _EmptyState(text: 'Aun no tienes reservas')
+          else
+            ...reservations.map(
+              (reservation) => _ReservationSummary(reservation: reservation),
+            ),
+        ],
       ],
     );
   }
 }
 
-class _ReservationTab extends StatelessWidget {
-  const _ReservationTab({
-    required this.tripId,
-    required this.userId,
-    required this.reservationId,
+class _CompanyView extends StatelessWidget {
+  const _CompanyView({
+    required this.routes,
+    required this.trips,
+    required this.passengers,
+    required this.scheduleId,
+    required this.vehicleId,
+    required this.driverId,
+    required this.routeOrigin,
+    required this.routeDestination,
+    required this.routePrice,
+    required this.routeDeparture,
+    required this.routeArrival,
+    required this.routeDistance,
+    required this.routeMinutes,
+    required this.onCreateRoute,
+    required this.onCreateTrip,
+    required this.onRefresh,
+    required this.onUseSchedule,
+  });
+
+  final List<dynamic> routes;
+  final List<dynamic> trips;
+  final List<dynamic> passengers;
+  final TextEditingController scheduleId;
+  final TextEditingController vehicleId;
+  final TextEditingController driverId;
+  final TextEditingController routeOrigin;
+  final TextEditingController routeDestination;
+  final TextEditingController routePrice;
+  final TextEditingController routeDeparture;
+  final TextEditingController routeArrival;
+  final TextEditingController routeDistance;
+  final TextEditingController routeMinutes;
+  final VoidCallback onCreateRoute;
+  final VoidCallback onCreateTrip;
+  final VoidCallback onRefresh;
+  final ValueChanged<int> onUseSchedule;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _Section(icon: Icons.business, title: 'Modulo empresa'),
+        _Actions(
+          children: [
+            OutlinedButton.icon(
+              onPressed: onRefresh,
+              icon: const Icon(Icons.sync),
+              label: const Text('Actualizar'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _Stats(
+          routes: routes.length,
+          trips: trips.length,
+          passengers: passengers.length,
+        ),
+        const SizedBox(height: 16),
+        _Section(icon: Icons.alt_route, title: 'Crear ruta'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                _Field(
+                  controller: routeOrigin,
+                  label: 'Origen',
+                  icon: Icons.trip_origin,
+                ),
+                _Field(
+                  controller: routeDestination,
+                  label: 'Destino',
+                  icon: Icons.flag,
+                ),
+                _Field(
+                  controller: routePrice,
+                  label: 'Precio',
+                  icon: Icons.payments,
+                ),
+                _Field(
+                  controller: routeDeparture,
+                  label: 'Salida HH:mm',
+                  icon: Icons.schedule,
+                ),
+                _Field(
+                  controller: routeArrival,
+                  label: 'Llegada HH:mm',
+                  icon: Icons.schedule_send,
+                ),
+                _Field(
+                  controller: routeDistance,
+                  label: 'Distancia km',
+                  icon: Icons.straighten,
+                ),
+                _Field(
+                  controller: routeMinutes,
+                  label: 'Duracion min',
+                  icon: Icons.timelapse,
+                ),
+                _Actions(
+                  children: [
+                    FilledButton.icon(
+                      onPressed: onCreateRoute,
+                      icon: const Icon(Icons.add_location_alt),
+                      label: const Text('Crear ruta'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _Section(icon: Icons.route, title: 'Rutas y horarios'),
+        if (routes.isEmpty)
+          const _EmptyState(text: 'No hay rutas creadas')
+        else
+          ...routes.map(
+            (route) =>
+                _CompanyRouteCard(route: route, onUseSchedule: onUseSchedule),
+          ),
+        const SizedBox(height: 16),
+        _Section(icon: Icons.add_road, title: 'Crear viaje'),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                _Field(
+                  controller: scheduleId,
+                  label: 'Horario ID',
+                  icon: Icons.tag,
+                ),
+                _Field(
+                  controller: vehicleId,
+                  label: 'Vehiculo ID',
+                  icon: Icons.directions_bus,
+                ),
+                _Field(
+                  controller: driverId,
+                  label: 'Conductor ID',
+                  icon: Icons.badge,
+                ),
+                _Actions(
+                  children: [
+                    FilledButton.icon(
+                      onPressed: onCreateTrip,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Crear viaje para manana'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _Section(icon: Icons.people, title: 'Pasajeros'),
+        if (passengers.isEmpty)
+          const _EmptyState(text: 'Sin pasajeros registrados')
+        else
+          ...passengers.map(
+            (passenger) => _PassengerCard(passenger: passenger),
+          ),
+      ],
+    );
+  }
+}
+
+class _TripCard extends StatelessWidget {
+  const _TripCard({
+    required this.trip,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  final dynamic trip;
+  final bool selected;
+  final VoidCallback onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final route = trip['route'] is Map ? trip['route'] as Map : {};
+    final capacity = math.max((trip['max_passengers'] as int?) ?? 1, 1);
+    final current = (trip['current_passengers'] as int?) ?? 0;
+    final price = trip['price'] ?? route['base_price'] ?? 0;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        color: selected ? const Color(0xffecfdf5) : Colors.white,
+        child: ListTile(
+          leading: const Icon(Icons.directions_bus),
+          title: Text(
+            '${route['origin'] ?? '-'} -> ${route['destination'] ?? '-'}',
+          ),
+          subtitle: Text(
+            '${trip['departure_datetime'] ?? trip['departure_date'] ?? ''}\n'
+            'Cupos ${capacity - current} de $capacity - COP $price',
+          ),
+          isThreeLine: true,
+          trailing: FilledButton(
+            onPressed: onSelect,
+            child: Text(selected ? 'Elegida' : 'Elegir'),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SeatGrid extends StatelessWidget {
+  const _SeatGrid({
     required this.seats,
     required this.selectedSeats,
-    required this.onLoadSeats,
-    required this.onReserve,
-    required this.onAssign,
     required this.onSeatChanged,
   });
 
-  final TextEditingController tripId;
-  final TextEditingController userId;
-  final TextEditingController reservationId;
   final List<dynamic> seats;
   final Set<int> selectedSeats;
-  final VoidCallback onLoadSeats;
-  final VoidCallback onReserve;
-  final VoidCallback onAssign;
   final void Function(int id, bool selected) onSeatChanged;
 
   @override
   Widget build(BuildContext context) {
-    final canSubmit = selectedSeats.isNotEmpty;
+    if (seats.isEmpty) {
+      return const _EmptyState(text: 'Cargando asientos del viaje');
+    }
 
-    return _Panel(
-      children: [
-        _Field(controller: userId, label: 'Usuario ID', icon: Icons.person),
-        _Field(controller: tripId, label: 'Viaje ID', icon: Icons.route),
-        _Field(
-          controller: reservationId,
-          label: 'Reserva ID para asignar',
-          icon: Icons.confirmation_number,
-        ),
-        _Actions(
-          children: [
-            FilledButton.icon(
-              onPressed: onLoadSeats,
-              icon: const Icon(Icons.event_seat),
-              label: const Text('Cargar asientos'),
-            ),
-            OutlinedButton.icon(
-              onPressed: canSubmit ? onReserve : null,
-              icon: const Icon(Icons.add_card),
-              label: const Text('Crear reserva'),
-            ),
-            OutlinedButton.icon(
-              onPressed: canSubmit ? onAssign : null,
-              icon: const Icon(Icons.playlist_add_check),
-              label: const Text('Asignar'),
-            ),
-          ],
-        ),
-        Wrap(
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Wrap(
           spacing: 8,
           runSpacing: 8,
           children: seats.map((seat) {
@@ -676,147 +1032,288 @@ class _ReservationTab extends StatelessWidget {
               avatar: Icon(
                 Icons.event_seat,
                 size: 18,
-                color: available ? null : Colors.red.shade400,
+                color: available ? null : Colors.red.shade500,
               ),
               label: Text(seat['seat_number'].toString()),
             );
           }).toList(),
         ),
-      ],
+      ),
     );
   }
 }
 
-class _ReservationsTab extends StatelessWidget {
-  const _ReservationsTab({
-    required this.userId,
-    required this.reservations,
-    required this.onLoad,
-    required this.onCancel,
+class _PaymentCard extends StatelessWidget {
+  const _PaymentCard({
+    required this.trip,
+    required this.selectedSeatCount,
+    required this.onPay,
   });
 
-  final TextEditingController userId;
-  final List<dynamic> reservations;
-  final VoidCallback onLoad;
-  final ValueChanged<int> onCancel;
+  final dynamic trip;
+  final int selectedSeatCount;
+  final VoidCallback? onPay;
 
   @override
   Widget build(BuildContext context) {
-    return _Panel(
-      children: [
-        _Field(controller: userId, label: 'Usuario ID', icon: Icons.person),
-        _Actions(
+    final route = trip['route'] is Map ? trip['route'] as Map : {};
+    final price = ((trip['price'] ?? route['base_price'] ?? 0) as num)
+        .toDouble();
+    final total = price * selectedSeatCount;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
           children: [
+            const Icon(Icons.payments),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                selectedSeatCount == 0
+                    ? 'Selecciona asiento para pagar'
+                    : '$selectedSeatCount asiento(s) - Total COP ${total.toStringAsFixed(0)}',
+              ),
+            ),
             FilledButton.icon(
-              onPressed: onLoad,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Cargar reservas'),
+              onPressed: onPay,
+              icon: const Icon(Icons.credit_card),
+              label: const Text('Pagar'),
             ),
           ],
         ),
-        ...reservations.map(
-          (reservation) =>
-              _ReservationCard(reservation: reservation, onCancel: onCancel),
-        ),
-      ],
+      ),
     );
   }
 }
 
-class _OperationsTab extends StatelessWidget {
-  const _OperationsTab({
-    required this.scheduleId,
-    required this.vehicleId,
-    required this.driverId,
-    required this.queueDriverId,
-    required this.onCreateTrip,
-    required this.onJoinQueue,
-  });
+class _ReservationSummary extends StatelessWidget {
+  const _ReservationSummary({required this.reservation});
 
-  final TextEditingController scheduleId;
-  final TextEditingController vehicleId;
-  final TextEditingController driverId;
-  final TextEditingController queueDriverId;
-  final VoidCallback onCreateTrip;
-  final VoidCallback onJoinQueue;
+  final dynamic reservation;
 
   @override
   Widget build(BuildContext context) {
-    return _Panel(
-      children: [
-        _Field(controller: scheduleId, label: 'Schedule ID', icon: Icons.timer),
-        _Field(
-          controller: vehicleId,
-          label: 'Vehicle ID',
-          icon: Icons.directions_bus,
+    final trip = reservation['trip'] is Map ? reservation['trip'] as Map : {};
+    final route = trip['route'] is Map ? trip['route'] as Map : {};
+    final seats = reservation['seats'] is List
+        ? (reservation['seats'] as List)
+              .map((seat) => seat['seat_number'] ?? '-')
+              .join(', ')
+        : '-';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        child: ListTile(
+          leading: Icon(
+            reservation['status'] == 'paid'
+                ? Icons.check_circle
+                : Icons.receipt,
+          ),
+          title: Text(
+            '${reservation['code'] ?? 'Reserva'} - ${reservation['status']}',
+          ),
+          subtitle: Text(
+            '${route['origin'] ?? ''} -> ${route['destination'] ?? ''}\n'
+            'Asientos: $seats - Total COP ${reservation['total_amount'] ?? ''}',
+          ),
+          isThreeLine: true,
         ),
-        _Field(controller: driverId, label: 'Driver ID', icon: Icons.badge),
-        _Actions(
-          children: [
-            FilledButton.icon(
-              onPressed: onCreateTrip,
-              icon: const Icon(Icons.add_road),
-              label: const Text('Crear viaje'),
-            ),
-          ],
-        ),
-        const Divider(height: 32),
-        _Field(
-          controller: queueDriverId,
-          label: 'Driver ID para cola',
-          icon: Icons.queue,
-        ),
-        _Actions(
-          children: [
-            OutlinedButton.icon(
-              onPressed: onJoinQueue,
-              icon: const Icon(Icons.queue_play_next),
-              label: const Text('Entrar a cola'),
-            ),
-          ],
-        ),
-      ],
+      ),
     );
   }
 }
 
-class _Panel extends StatelessWidget {
-  const _Panel({required this.children});
+class _CompanyRouteCard extends StatelessWidget {
+  const _CompanyRouteCard({required this.route, required this.onUseSchedule});
 
-  final List<Widget> children;
+  final dynamic route;
+  final ValueChanged<int> onUseSchedule;
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 980),
+    final schedules = route['schedules'] is List
+        ? route['schedules'] as List
+        : [];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: children
-                .map(
-                  (child) => Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: child,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${route['origin']} -> ${route['destination']}',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _Pill(
+                    icon: Icons.tag,
+                    text: route['code']?.toString() ?? '-',
                   ),
-                )
-                .toList(),
+                  _Pill(
+                    icon: Icons.payments,
+                    text: 'COP ${route['base_price']}',
+                  ),
+                  _Pill(
+                    icon: Icons.straighten,
+                    text: '${route['distance_km'] ?? '-'} km',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ...schedules.map(
+                (schedule) => ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.schedule),
+                  title: Text('Horario #${schedule['id']}'),
+                  subtitle: Text(
+                    '${schedule['departure_time']} - ${schedule['estimated_arrival_time']}',
+                  ),
+                  trailing: TextButton(
+                    onPressed: () => onUseSchedule(schedule['id'] as int),
+                    child: const Text('Usar'),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 }
 
-class _Actions extends StatelessWidget {
-  const _Actions({required this.children});
+class _PassengerCard extends StatelessWidget {
+  const _PassengerCard({required this.passenger});
 
-  final List<Widget> children;
+  final dynamic passenger;
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(spacing: 8, runSpacing: 8, children: children);
+    final person = passenger['passenger'] is Map
+        ? passenger['passenger'] as Map
+        : {};
+    final trip = passenger['trip'] is Map ? passenger['trip'] as Map : {};
+    final route = trip['route'] is Map ? trip['route'] as Map : {};
+    final seats = passenger['seats'] is List
+        ? (passenger['seats'] as List)
+              .map((seat) => seat['seat_number'])
+              .join(', ')
+        : '-';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        child: ListTile(
+          leading: const Icon(Icons.person),
+          title: Text('${person['name'] ?? '-'} - ${passenger['status']}'),
+          subtitle: Text(
+            '${route['origin'] ?? ''} -> ${route['destination'] ?? ''}\n'
+            'Asientos: $seats - ${person['phone'] ?? person['email'] ?? ''}',
+          ),
+          isThreeLine: true,
+        ),
+      ),
+    );
+  }
+}
+
+class _Stats extends StatelessWidget {
+  const _Stats({
+    required this.routes,
+    required this.trips,
+    required this.passengers,
+  });
+
+  final int routes;
+  final int trips;
+  final int passengers;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth < 680 ? 1 : 3;
+        final items = [
+          _Stat('Rutas', routes.toString(), Icons.alt_route),
+          _Stat('Viajes', trips.toString(), Icons.directions_bus),
+          _Stat('Pasajeros', passengers.toString(), Icons.people),
+        ];
+        return GridView.count(
+          crossAxisCount: columns,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: columns == 1 ? 5 : 2.6,
+          children: items
+              .map(
+                (item) => Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Row(
+                      children: [
+                        Icon(item.icon),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(item.label),
+                              Text(
+                                item.value,
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+              .toList(),
+        );
+      },
+    );
+  }
+}
+
+class _Stat {
+  _Stat(this.label, this.value, this.icon);
+
+  final String label;
+  final String value;
+  final IconData icon;
+}
+
+class _Section extends StatelessWidget {
+  const _Section({required this.icon, required this.title});
+
+  final IconData icon;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Icon(icon, size: 20),
+          const SizedBox(width: 8),
+          Text(title, style: Theme.of(context).textTheme.titleMedium),
+        ],
+      ),
+    );
   }
 }
 
@@ -835,80 +1332,66 @@ class _Field extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      obscureText: obscureText,
-      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
-    );
-  }
-}
-
-class _TripCard extends StatelessWidget {
-  const _TripCard({required this.trip, required this.onUseTrip});
-
-  final dynamic trip;
-  final ValueChanged<int> onUseTrip;
-
-  @override
-  Widget build(BuildContext context) {
-    final route = trip['route'] is Map ? trip['route'] as Map : {};
-    final vehicle = trip['vehicle'] is Map ? trip['vehicle'] as Map : {};
-    final driver = trip['driver'] is Map ? trip['driver'] as Map : {};
-    final id = trip['id'] as int;
-
-    return Card(
-      child: ListTile(
-        title: Text(
-          '${route['origin'] ?? 'Origen'} -> ${route['destination'] ?? 'Destino'}',
-        ),
-        subtitle: Text(
-          'Viaje #$id  ${trip['departure_datetime'] ?? trip['departure_date'] ?? ''}\n'
-          'Estado: ${trip['status']}  Cupos: ${trip['current_passengers']}/${trip['max_passengers']}\n'
-          'Vehiculo: ${vehicle['plate'] ?? '-'}  Conductor: ${driver['name'] ?? '-'}',
-        ),
-        isThreeLine: true,
-        trailing: IconButton(
-          tooltip: 'Usar viaje',
-          onPressed: () => onUseTrip(id),
-          icon: const Icon(Icons.arrow_forward),
-        ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: controller,
+        obscureText: obscureText,
+        decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
       ),
     );
   }
 }
 
-class _ReservationCard extends StatelessWidget {
-  const _ReservationCard({required this.reservation, required this.onCancel});
+class _Actions extends StatelessWidget {
+  const _Actions({required this.children});
 
-  final dynamic reservation;
-  final ValueChanged<int> onCancel;
+  final List<Widget> children;
 
   @override
   Widget build(BuildContext context) {
-    final id = reservation['id'] as int;
-    final seats = reservation['seats'] is List
-        ? (reservation['seats'] as List)
-              .map((seat) => seat['seat_number'] ?? seat['seat_id'])
-              .join(', ')
-        : '-';
-    final trip = reservation['trip'] is Map ? reservation['trip'] as Map : {};
-    final route = trip['route'] is Map ? trip['route'] as Map : {};
+    return Wrap(spacing: 8, runSpacing: 8, children: children);
+  }
+}
 
+class _Pill extends StatelessWidget {
+  const _Pill({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: const Color(0xffdbe3ef)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16),
+          const SizedBox(width: 6),
+          Flexible(child: Text(text, overflow: TextOverflow.ellipsis)),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
     return Card(
-      child: ListTile(
-        title: Text('${reservation['code']} - ${reservation['status']}'),
-        subtitle: Text(
-          'Total: ${reservation['total_amount']}  Asientos: $seats\n'
-          '${route['origin'] ?? ''} -> ${route['destination'] ?? ''}  ${trip['departure_datetime'] ?? ''}',
-        ),
-        isThreeLine: true,
-        trailing: IconButton(
-          tooltip: 'Cancelar reserva',
-          onPressed: reservation['status'] == 'cancelled'
-              ? null
-              : () => onCancel(id),
-          icon: const Icon(Icons.cancel_outlined),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Center(child: Text(text)),
       ),
     );
   }
